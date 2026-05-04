@@ -1,0 +1,1 @@
+ALTER TABLE `appointments` MODIFY COLUMN `serviceId` int;

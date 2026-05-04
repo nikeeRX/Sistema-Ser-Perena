@@ -1,0 +1,1 @@
+ALTER TABLE `appointments` ADD `paymentMethod` enum('credit','debit','pix','cash') DEFAULT 'cash';
