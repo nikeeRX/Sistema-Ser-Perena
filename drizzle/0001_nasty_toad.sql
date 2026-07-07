@@ -1,1 +1,0 @@
-ALTER TABLE `access_tokens` ADD `planSlug` varchar(64);

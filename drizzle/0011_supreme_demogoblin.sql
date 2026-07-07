@@ -1,1 +1,0 @@
-ALTER TABLE `plans` MODIFY COLUMN `features` text NOT NULL;

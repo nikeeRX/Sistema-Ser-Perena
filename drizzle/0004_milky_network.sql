@@ -1,1 +1,0 @@
-ALTER TABLE `appointment_items` ADD `discount` decimal(10,2) DEFAULT '0' NOT NULL;
