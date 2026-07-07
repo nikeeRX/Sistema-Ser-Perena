@@ -5,7 +5,7 @@ from flask import Flask, render_template_string
 app = Flask(__name__)
 
 # ==========================================
-# 1. CONFIGURAÇÃO DO BANCO DE DADOS (RAILWAY)
+# 1. CONFIGURAÇÃO DO BANCO DE DADOS (RAILWAY).
 # ==========================================
 # Link real que você enviou (Cuidado ao subir para o GitHub público depois!)
 DATABASE_URL = "postgresql://postgres:ZoLVFMMKvRQxFhFpTApEqmESiNdQpCOy@acela.proxy.rlwy.net:19268/railway"
