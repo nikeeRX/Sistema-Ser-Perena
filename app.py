@@ -1,5 +1,8 @@
 import os
+import smtplib
 import psycopg2
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from flask import Flask, render_template_string, request, redirect, url_for
 
 app = Flask(__name__)
@@ -18,21 +21,18 @@ def get_db_connection():
         return None
 
 def iniciar_banco():
-    """Atualiza as tabelas com senha e status de aprovação"""
+    """Atualiza as tabelas forçando a criação de TODAS as colunas novas"""
     conn = get_db_connection()
     if conn is None:
         return
     
     cur = conn.cursor()
     
-    # Criando as tabelas caso seja um banco zerado
+    # Cria a base se não existir
     cur.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             id SERIAL PRIMARY KEY,
             nome VARCHAR(100) NOT NULL,
-            cpf VARCHAR(14) UNIQUE,
-            email VARCHAR(100) UNIQUE,
-            contato VARCHAR(20),
             tipo_perfil VARCHAR(50) NOT NULL
         );
         CREATE TABLE IF NOT EXISTS planos_de_acao (
@@ -43,10 +43,20 @@ def iniciar_banco():
         );
     ''')
     
-    # Atualizando o banco existente para suportar as novas regras (Senha e Status)
-    cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS senha VARCHAR(100);")
-    cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pendente';")
-    
+    # FORÇA a adição das colunas que deram erro na sua versão anterior
+    colunas_novas = [
+        "cpf VARCHAR(14)",
+        "email VARCHAR(100)",
+        "contato VARCHAR(20)",
+        "senha VARCHAR(100)",
+        "status VARCHAR(20) DEFAULT 'pendente'"
+    ]
+    for coluna in colunas_novas:
+        try:
+            cur.execute(f"ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS {coluna.split()[0]} {' '.join(coluna.split()[1:])};")
+        except Exception as e:
+            conn.rollback() # Ignora se der algum conflito e segue o jogo
+            
     # Criando o usuário Admin caso não exista
     cur.execute("SELECT COUNT(*) FROM usuarios WHERE tipo_perfil = 'admin';")
     if cur.fetchone()[0] == 0:
@@ -59,10 +69,55 @@ def iniciar_banco():
     conn.commit()
     cur.close()
     conn.close()
-    print("Banco atualizado com rotinas de Senha e Status!")
+    print("Banco atualizado com sucesso e colunas sincronizadas!")
 
 # ==========================================
-# 2. FRONT-END (HTML + CSS RAIZ EMBUTIDO)
+# 2. SISTEMA DE ENVIO DE E-MAIL
+# ==========================================
+def enviar_email_boas_vindas(destinatario, nome_paciente):
+    """Envia um e-mail de boas-vindas usando o Gmail da clínica"""
+    # Puxa o e-mail e senha das variáveis de ambiente do Railway
+    remetente = os.getenv("EMAIL_CLINICA", "nao-configurado")
+    senha = os.getenv("SENHA_EMAIL_CLINICA", "nao-configurado")
+    
+    if remetente == "nao-configurado":
+        print("AVISO: E-mail não enviado. Configure as variáveis EMAIL_CLINICA e SENHA_EMAIL_CLINICA no Railway.")
+        return
+
+    assunto = "Bem-vindo(a) à Ser Perene - Cadastro em Análise"
+    corpo = f"""
+    Olá, {nome_paciente}!
+    
+    Recebemos com sucesso a sua solicitação de cadastro no aplicativo da clínica Ser Perene.
+    
+    No momento, o seu perfil está em análise pela nossa equipe. Assim que a sua psicóloga ou o administrador aprovarem o seu acesso, você poderá entrar na plataforma para acompanhar a sua Jornada e seus planos de ação.
+    
+    Se tiver qualquer dúvida, estamos à disposição.
+    
+    Com carinho,
+    Equipe Ser Perene
+    """
+    
+    msg = MIMEMultipart()
+    msg['From'] = remetente
+    msg['To'] = destinatario
+    msg['Subject'] = assunto
+    msg.attach(MIMEText(corpo, 'plain'))
+    
+    try:
+        # Conecta no servidor do Gmail
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(remetente, senha)
+        text = msg.as_string()
+        server.sendmail(remetente, destinatario, text)
+        server.quit()
+        print(f"E-mail de boas-vindas disparado com sucesso para {destinatario}!")
+    except Exception as e:
+        print(f"Erro ao disparar o e-mail: {e}")
+
+# ==========================================
+# 3. FRONT-END (HTML + CSS RAIZ EMBUTIDO)
 # ==========================================
 TEMPLATE_UNICO = """
 <!DOCTYPE html>
@@ -77,27 +132,20 @@ TEMPLATE_UNICO = """
         header { width: 100%; background-color: #E8D5D0; padding: 20px; text-align: center; border-bottom: 2px solid #3A261D; }
         header h1 { font-size: 2.5rem; letter-spacing: 2px; font-weight: normal; }
         header p { font-style: italic; font-size: 0.9rem; margin-top: 5px; }
-        
         .container { width: 90%; max-width: 800px; margin: 40px auto; }
         .card { background-color: #FFFFFF; border-radius: 12px; padding: 30px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(58, 38, 29, 0.1); border-left: 6px solid #3A261D; }
         .card h2 { margin-bottom: 15px; font-size: 1.5rem; border-bottom: 1px solid #E8D5D0; padding-bottom: 10px; }
         .card p { line-height: 1.6; margin-bottom: 10px; font-family: 'Arial', sans-serif; }
-        
         label { font-family: 'Arial', sans-serif; font-weight: bold; font-size: 0.9rem; display: block; margin-top: 12px; text-align: left; }
-        input[type="text"], input[type="email"], input[type="password"], select { 
-            width: 100%; padding: 12px; margin: 6px 0 16px 0; border: 1px solid #E8D5D0; 
-            border-radius: 6px; background-color: #F4EBE9; color: #3A261D; font-family: 'Arial', sans-serif; font-size: 1rem; 
-        }
+        input[type="text"], input[type="email"], input[type="password"], select { width: 100%; padding: 12px; margin: 6px 0 16px 0; border: 1px solid #E8D5D0; border-radius: 6px; background-color: #F4EBE9; color: #3A261D; font-family: 'Arial', sans-serif; font-size: 1rem; }
         input:focus, select:focus { outline: none; border-color: #3A261D; }
-        
         .btn { display: inline-block; background-color: #3A261D; color: #E8D5D0; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; text-align: center; border: none; cursor: pointer; transition: background 0.3s; font-family: 'Arial', sans-serif; font-size: 1rem; }
         .btn:hover { background-color: #5c3e30; }
         .btn-small { padding: 6px 12px; font-size: 0.8rem; }
         .btn-outline { background-color: transparent; color: #3A261D; border: 1px solid #3A261D; }
-        
         .alerta { background-color: #E8D5D0; color: #3A261D; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: bold; text-align: center; border: 1px dashed #3A261D; }
         .erro { background-color: #ffcccc; color: #990000; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; font-family: 'Arial', sans-serif; font-size: 0.9rem;}
-        
+        .sucesso { background-color: #d4edda; color: #155724; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; font-family: 'Arial', sans-serif; font-size: 0.9rem;}
         .link-cadastro { display: block; text-align: center; margin-top: 20px; font-family: 'Arial', sans-serif; color: #3A261D; text-decoration: none; font-size: 0.9rem; }
         .link-cadastro:hover { text-decoration: underline; }
     </style>
@@ -115,7 +163,7 @@ TEMPLATE_UNICO = """
 """
 
 # ==========================================
-# 3. ROTAS E LÓGICA DO APLICATIVO
+# 4. ROTAS E LÓGICA DO APLICATIVO
 # ==========================================
 
 @app.route('/', methods=['GET', 'POST'])
@@ -128,7 +176,6 @@ def login():
         conn = get_db_connection()
         if conn:
             cur = conn.cursor()
-            # Busca o usuário pelo e-mail e senha
             cur.execute("SELECT id, tipo_perfil, status FROM usuarios WHERE email = %s AND senha = %s LIMIT 1;", (email, senha))
             user = cur.fetchone()
             cur.close()
@@ -136,18 +183,12 @@ def login():
             
             if user:
                 user_id, perfil, status = user
-                
-                # Bloqueia se estiver pendente
                 if status == 'pendente':
                     mensagem_erro = "Seu cadastro está em análise. Aguarde a aprovação da clínica."
                 else:
-                    # Redireciona para a área certa
-                    if perfil == 'paciente':
-                        return redirect(url_for('area_paciente', user_id=user_id))
-                    elif perfil == 'psicologa':
-                        return redirect(url_for('area_psicologa', user_id=user_id))
-                    elif perfil == 'admin':
-                        return redirect(url_for('area_admin'))
+                    if perfil == 'paciente': return redirect(url_for('area_paciente', user_id=user_id))
+                    elif perfil == 'psicologa': return redirect(url_for('area_psicologa', user_id=user_id))
+                    elif perfil == 'admin': return redirect(url_for('area_admin'))
             else:
                 mensagem_erro = "E-mail ou senha incorretos."
 
@@ -158,12 +199,10 @@ def login():
         <h2 style="text-align: center; margin-bottom: 20px;">Acesso ao Sistema</h2>
         {html_erro}
         <form method="POST">
-            <label for="email">E-mail</label>
-            <input type="email" id="email" name="email" required>
-            
-            <label for="senha">Senha</label>
-            <input type="password" id="senha" name="senha" required>
-            
+            <label>E-mail</label>
+            <input type="email" name="email" required>
+            <label>Senha</label>
+            <input type="password" name="senha" required>
             <button type="submit" class="btn" style="width: 100%; margin-top: 10px;">Entrar</button>
         </form>
         <a href="/cadastro" class="link-cadastro">Ainda não tem cadastro? <strong>Solicite seu acesso aqui.</strong></a>
@@ -174,6 +213,8 @@ def login():
 @app.route('/cadastro', methods=['GET', 'POST'])
 def cadastro():
     mensagem = ""
+    status_classe = "alerta"
+    
     if request.method == 'POST':
         nome = request.form.get('nome')
         cpf = request.form.get('cpf')
@@ -185,21 +226,26 @@ def cadastro():
         if conn:
             cur = conn.cursor()
             try:
-                # O perfil é sempre 'paciente' e o status é 'pendente'
                 cur.execute("""
                     INSERT INTO usuarios (nome, cpf, email, contato, senha, tipo_perfil, status)
                     VALUES (%s, %s, %s, %s, %s, 'paciente', 'pendente');
                 """, (nome, cpf, email, contato, senha))
                 conn.commit()
-                mensagem = "Cadastro solicitado com sucesso! Aguarde a aprovação da clínica para fazer login."
+                
+                # CHAMA A FUNÇÃO DE E-MAIL AQUI!
+                enviar_email_boas_vindas(email, nome)
+                
+                mensagem = "Cadastro solicitado com sucesso! Um e-mail de confirmação foi enviado para você."
+                status_classe = "sucesso"
             except Exception as e:
                 conn.rollback()
-                mensagem = "Erro: CPF ou E-mail já cadastrados."
+                mensagem = "Erro: Este CPF ou E-mail já possui cadastro."
+                status_classe = "erro"
             finally:
                 cur.close()
                 conn.close()
 
-    html_msg = f"<div class='alerta'>{mensagem}</div>" if mensagem else ""
+    html_msg = f"<div class='{status_classe}'>{mensagem}</div>" if mensagem else ""
 
     conteudo_html = f"""
     <div class="card" style="max-width: 500px; margin: 0 auto;">
@@ -209,19 +255,14 @@ def cadastro():
         <form method="POST">
             <label>Nome Completo</label>
             <input type="text" name="nome" required>
-            
             <label>CPF</label>
             <input type="text" name="cpf" required>
-            
             <label>E-mail</label>
             <input type="email" name="email" required>
-            
             <label>Telefone de Contato</label>
             <input type="text" name="contato" required>
-            
             <label>Crie uma Senha</label>
             <input type="password" name="senha" required>
-            
             <button type="submit" class="btn" style="width: 100%; margin-top: 10px;">Solicitar Acesso</button>
         </form>
         <a href="/" class="link-cadastro">Já tem conta? <strong>Faça login aqui.</strong></a>
@@ -231,10 +272,9 @@ def cadastro():
 
 @app.route('/paciente/<int:user_id>')
 def area_paciente(user_id):
-    # A mesma lógica anterior, apenas isolada para o paciente logado
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT nome, cpf, email FROM usuarios WHERE id = %s;", (user_id,))
+    cur.execute("SELECT nome FROM usuarios WHERE id = %s;", (user_id,))
     paciente = cur.fetchone()
     cur.close()
     conn.close()
@@ -264,7 +304,6 @@ def area_psicologa(user_id):
 def area_admin():
     conn = get_db_connection()
     cur = conn.cursor()
-    # Pega todos os pacientes pendentes
     cur.execute("SELECT id, nome, email, contato FROM usuarios WHERE tipo_perfil = 'paciente' AND status = 'pendente';")
     pendentes = cur.fetchall()
     cur.close()
@@ -275,10 +314,7 @@ def area_admin():
         for p in pendentes:
             html_pendentes += f"""
             <div style="border-bottom: 1px solid #E8D5D0; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <strong>{p[1]}</strong><br>
-                    <span style="font-size: 0.8rem; font-family: Arial;">{p[2]} | {p[3]}</span>
-                </div>
+                <div><strong>{p[1]}</strong><br><span style="font-size: 0.8rem; font-family: Arial;">{p[2]} | {p[3]}</span></div>
                 <a href="/aprovar/{p[0]}" class="btn btn-small">Aprovar Acesso</a>
             </div>
             """
@@ -289,11 +325,6 @@ def area_admin():
     <div class="card">
         <h2>Pacientes Pendentes de Aprovação</h2>
         {html_pendentes}
-    </div>
-    <div class="card">
-        <h2>Cadastrar Nova Psicóloga</h2>
-        <p style="font-size: 0.9rem;">O cadastro de profissionais é feito exclusivamente por aqui.</p>
-        <button class="btn btn-outline" style="margin-top: 10px;">+ Adicionar Profissional</button>
     </div>
     <a href="/" class="btn btn-outline">Sair</a>
     """
