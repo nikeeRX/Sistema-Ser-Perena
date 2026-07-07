@@ -25,7 +25,7 @@ def iniciar_banco():
     if conn is None: return
     cur = conn.cursor()
     
-    # Criação das tabelas base e módulos
+    # Criação das tabelas base e de todos os módulos
     cur.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             id SERIAL PRIMARY KEY,
@@ -77,12 +77,13 @@ def iniciar_banco():
         );
     ''')
     
-    # Força atualização caso já existam tabelas
+    # Força a adição de colunas em tabelas existentes para não dar erro
     colunas_plano = ["exercicios TEXT", "metas TEXT", "recomendacoes TEXT", "psicologa_id INTEGER"]
     for col in colunas_plano:
         try: cur.execute(f"ALTER TABLE planos_de_acao ADD COLUMN IF NOT EXISTS {col};")
         except: pass
 
+    # Cria a conta do administrador se não existir
     cur.execute("SELECT COUNT(*) FROM usuarios WHERE tipo_perfil = 'admin';")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO usuarios (nome, email, senha, tipo_perfil, status) VALUES ('Administrador', 'admin@serperene.com', 'admin123', 'admin', 'ativo');")
@@ -103,7 +104,7 @@ def enviar_email_boas_vindas(destinatario, nome_paciente):
     msg['From'] = remetente
     msg['To'] = destinatario
     msg['Subject'] = "Bem-vindo(a) à Ser Perene - Cadastro em Análise"
-    corpo = f"Olá, {nome_paciente}!\n\nRecebemos sua solicitação de cadastro. Seu perfil está em análise pela nossa equipe."
+    corpo = f"Olá, {nome_paciente}!\n\nRecebemos sua solicitação de cadastro. Seu perfil está em análise pela nossa equipe. Assim que for aprovado, você poderá acessar o aplicativo."
     msg.attach(MIMEText(corpo, 'plain'))
     
     try:
@@ -112,7 +113,7 @@ def enviar_email_boas_vindas(destinatario, nome_paciente):
         server.login(remetente, senha)
         server.sendmail(remetente, destinatario, msg.as_string())
         server.quit()
-    except Exception as e: print(f"Erro e-mail: {e}")
+    except Exception as e: print(f"Erro ao enviar e-mail: {e}")
 
 # ==========================================
 # 3. FRONT-END (HTML + CSS RAIZ)
@@ -140,11 +141,15 @@ TEMPLATE_UNICO = """
         textarea { resize: vertical; min-height: 80px; }
         .btn { display: inline-block; background-color: #3A261D; color: #E8D5D0; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; text-align: center; border: none; cursor: pointer; transition: background 0.3s; font-family: 'Arial', sans-serif; }
         .btn:hover { background-color: #5c3e30; }
+        .btn-small { padding: 6px 12px; font-size: 0.8rem; }
         .btn-outline { background-color: transparent; color: #3A261D; border: 1px solid #3A261D; }
         .sucesso { background-color: #d4edda; color: #155724; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; font-family: 'Arial', sans-serif; }
+        .erro { background-color: #ffcccc; color: #990000; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; font-family: 'Arial', sans-serif; font-size: 0.9rem;}
         .alerta { background-color: #E8D5D0; color: #3A261D; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: bold; text-align: center; border: 1px dashed #3A261D; font-family: 'Arial', sans-serif; }
         .mensagem-box { background-color: #F9F4F3; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #E8D5D0; }
         .data-msg { font-size: 0.75rem; color: #888; display: block; margin-top: 5px; }
+        .link-cadastro { display: block; text-align: center; margin-top: 20px; font-family: 'Arial', sans-serif; color: #3A261D; text-decoration: none; font-size: 0.9rem; }
+        .link-cadastro:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -169,10 +174,13 @@ def login():
             cur.close(); conn.close()
             
             if user:
-                if user[2] == 'pendente': return render_template_string(TEMPLATE_UNICO, titulo="Login", conteudo="<div class='alerta' style='max-width: 400px; margin: 0 auto;'>Cadastro em análise pela clínica.</div>")
+                if user[2] == 'pendente': 
+                    return render_template_string(TEMPLATE_UNICO, titulo="Login", conteudo="<div class='erro' style='max-width: 400px; margin: 0 auto;'>Seu cadastro ainda está em análise pela clínica.</div>")
                 if user[1] == 'paciente': return redirect(url_for('area_paciente', user_id=user[0]))
                 if user[1] == 'psicologa': return redirect(url_for('area_psicologa', user_id=user[0]))
                 if user[1] == 'admin': return redirect(url_for('area_admin'))
+            else:
+                return render_template_string(TEMPLATE_UNICO, titulo="Login", conteudo="<div class='erro' style='max-width: 400px; margin: 0 auto;'>E-mail ou senha incorretos.</div>")
 
     conteudo_html = """
     <div class="card" style="max-width: 400px; margin: 0 auto;">
@@ -182,7 +190,7 @@ def login():
             <label>Senha</label><input type="password" name="senha" required>
             <button type="submit" class="btn" style="width: 100%;">Entrar</button>
         </form>
-        <a href="/cadastro" style="display: block; text-align: center; margin-top: 15px; color:#3A261D; font-family: 'Arial';">Solicitar Acesso</a>
+        <a href="/cadastro" class="link-cadastro">Ainda não tem cadastro? <strong>Solicite acesso aqui.</strong></a>
     </div>
     """
     return render_template_string(TEMPLATE_UNICO, titulo="Login", conteudo=conteudo_html)
@@ -199,80 +207,33 @@ def cadastro():
                 conn.commit()
                 enviar_email_boas_vindas(request.form.get('email'), request.form.get('nome'))
                 return redirect('/')
-            except: conn.rollback()
+            except: 
+                conn.rollback()
+                return render_template_string(TEMPLATE_UNICO, titulo="Cadastro", conteudo="<div class='erro' style='max-width: 500px; margin: 0 auto;'>Erro: CPF ou E-mail já cadastrado.</div>")
             finally: cur.close(); conn.close()
     
     conteudo_html = """
     <div class="card" style="max-width: 500px; margin: 0 auto;">
-        <h2>Cadastro de Paciente</h2>
+        <h2 style="text-align: center;">Cadastro de Paciente</h2>
         <form method="POST">
-            <label>Nome</label><input type="text" name="nome" required>
+            <label>Nome Completo</label><input type="text" name="nome" required>
             <label>CPF</label><input type="text" name="cpf" required>
             <label>E-mail</label><input type="email" name="email" required>
             <label>Contato</label><input type="text" name="contato" required>
-            <label>Senha</label><input type="password" name="senha" required>
-            <button type="submit" class="btn" style="width: 100%;">Solicitar</button>
+            <label>Crie uma Senha</label><input type="password" name="senha" required>
+            <button type="submit" class="btn" style="width: 100%;">Solicitar Acesso</button>
         </form>
+        <a href="/" class="link-cadastro">Já tem conta? <strong>Faça login aqui.</strong></a>
     </div>
     """
     return render_template_string(TEMPLATE_UNICO, titulo="Cadastro", conteudo=conteudo_html)
 
-@app.route('/psicologa/<int:user_id>', methods=['GET', 'POST'])
-def area_psicologa(user_id):
-    # Rota mantida conforme a última atualização
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if request.method == 'POST':
-        acao = request.form.get('acao')
-        if acao == 'novo_recado':
-            cur.execute("INSERT INTO recados_gerais (psicologa_id, mensagem) VALUES (%s, %s);", (user_id, request.form.get('mensagem')))
-        elif acao == 'novo_plano':
-            cur.execute("INSERT INTO planos_de_acao (paciente_id, psicologa_id, plano, exercicios, metas, recomendacoes) VALUES (%s, %s, %s, %s, %s, %s);", 
-                        (request.form.get('paciente_id'), user_id, request.form.get('plano'), request.form.get('exercicios'), request.form.get('metas'), request.form.get('recomendacoes')))
-        conn.commit()
-    cur.execute("SELECT id, nome FROM usuarios WHERE tipo_perfil = 'paciente' AND status = 'ativo';")
-    pacientes = cur.fetchall()
-    options_pacientes = "".join([f"<option value='{p[0]}'>{p[1]}</option>" for p in pacientes])
-    cur.close(); conn.close()
-
-    conteudo_html = f"""
-    <div class="card">
-        <h2>1. Agenda do Dia</h2><button class="btn btn-outline">+ Agendar Nova Sessão</button>
-    </div>
-    <div class="card">
-        <h2>2. Criar Plano de Ação (Pós-Sessão)</h2>
-        <form method="POST">
-            <input type="hidden" name="acao" value="novo_plano">
-            <label>Selecione o Paciente</label><select name="paciente_id" required><option value="">Escolha...</option>{options_pacientes}</select>
-            <label>Plano de Ação - Individual</label><textarea name="plano" required></textarea>
-            <label>Exercícios Sugeridos</label><textarea name="exercicios"></textarea>
-            <label>Metas</label><textarea name="metas"></textarea>
-            <label>Recomendações</label><textarea name="recomendacoes"></textarea>
-            <button type="submit" class="btn" style="width: 100%; margin-top: 10px;">Salvar Plano</button>
-        </form>
-    </div>
-    <div class="card">
-        <h2>3. Mural Geral</h2>
-        <form method="POST">
-            <input type="hidden" name="acao" value="novo_recado">
-            <label>Escreva a reflexão ou aviso</label><textarea name="mensagem" required></textarea>
-            <button type="submit" class="btn" style="width: 100%;">Postar</button>
-        </form>
-    </div>
-    <a href="/" class="btn btn-outline">Sair do Painel</a>
-    """
-    return render_template_string(TEMPLATE_UNICO, titulo="Área da Psicóloga", conteudo=conteudo_html)
-
-# ==========================================
-# ÁREA DO PACIENTE (NOVA IMPLEMENTAÇÃO)
-# ==========================================
 @app.route('/paciente/<int:user_id>', methods=['GET', 'POST'])
 def area_paciente(user_id):
     mensagem_sucesso = ""
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # Se o paciente enviou uma mensagem para a psicóloga
     if request.method == 'POST':
         psicologa_id = request.form.get('psicologa_id')
         conteudo = request.form.get('mensagem')
@@ -281,124 +242,232 @@ def area_paciente(user_id):
             conn.commit()
             mensagem_sucesso = "Mensagem enviada com sucesso para a psicóloga!"
 
-    # 1. Puxar nome do paciente
     cur.execute("SELECT nome FROM usuarios WHERE id = %s;", (user_id,))
     nome_paciente = cur.fetchone()[0]
 
-    # 2. Puxar o plano de ação mais recente (Minha Jornada)
     cur.execute("SELECT plano, exercicios, metas, recomendacoes, data_criacao FROM planos_de_acao WHERE paciente_id = %s ORDER BY data_criacao DESC LIMIT 1;", (user_id,))
     plano_atual = cur.fetchone()
 
-    # 3. Puxar histórico de planos (ignorando o atual)
     cur.execute("SELECT plano, data_criacao FROM planos_de_acao WHERE paciente_id = %s ORDER BY data_criacao DESC OFFSET 1;", (user_id,))
     historico = cur.fetchall()
 
-    # 4. Puxar Mensagens da Clínica (Mural Geral)
-    cur.execute("""
-        SELECT u.nome, r.mensagem, r.data_criacao 
-        FROM recados_gerais r JOIN usuarios u ON r.psicologa_id = u.id 
-        ORDER BY r.data_criacao DESC LIMIT 5;
-    """)
+    cur.execute("SELECT u.nome, r.mensagem, r.data_criacao FROM recados_gerais r JOIN usuarios u ON r.psicologa_id = u.id ORDER BY r.data_criacao DESC LIMIT 5;")
     recados = cur.fetchall()
 
-    # 5. Puxar Lembretes Exclusivos (Mensagens da Psicóloga para o Paciente)
-    cur.execute("""
-        SELECT u.nome, m.conteudo, m.data_envio 
-        FROM mensagens m JOIN usuarios u ON m.remetente_id = u.id 
-        WHERE m.destinatario_id = %s ORDER BY m.data_envio DESC;
-    """, (user_id,))
+    cur.execute("SELECT u.nome, m.conteudo, m.data_envio FROM mensagens m JOIN usuarios u ON m.remetente_id = u.id WHERE m.destinatario_id = %s ORDER BY m.data_envio DESC;", (user_id,))
     mensagens_privadas = cur.fetchall()
 
-    # 6. Lista de psicólogas para o formulário de envio de mensagem
     cur.execute("SELECT id, nome FROM usuarios WHERE tipo_perfil = 'psicologa';")
     lista_psicologas = cur.fetchall()
     options_psi = "".join([f"<option value='{p[0]}'>{p[1]}</option>" for p in lista_psicologas])
 
     cur.close(); conn.close()
 
-    # --- Renderização HTML Dinâmica ---
     html_msg = f"<div class='sucesso'>{mensagem_sucesso}</div>" if mensagem_sucesso else ""
     
-    # Renderizar Minha Jornada
     if plano_atual:
-        html_jornada = f"""
-            <h3>Plano da Semana</h3>
-            <p>{plano_atual[0]}</p>
-            <h3>Exercícios</h3>
-            <p>{plano_atual[1] or 'Nenhum exercício sugerido.'}</p>
-            <h3>Metas</h3>
-            <p>{plano_atual[2] or 'Nenhuma meta registrada.'}</p>
-            <h3>Leituras / Vídeos</h3>
-            <p>{plano_atual[3] or 'Nenhuma recomendação no momento.'}</p>
-            <span class="data-msg">Criado em: {plano_atual[4].strftime('%d/%m/%Y')}</span>
-        """
+        html_jornada = f"<h3>Plano da Semana</h3><p>{plano_atual[0]}</p><h3>Exercícios</h3><p>{plano_atual[1] or 'Nenhum'}</p><h3>Metas</h3><p>{plano_atual[2] or 'Nenhuma'}</p><h3>Leituras / Vídeos</h3><p>{plano_atual[3] or 'Nenhum'}</p><span class='data-msg'>Criado em: {plano_atual[4].strftime('%d/%m/%Y')}</span>"
     else:
         html_jornada = "<p>Seu plano de ação ainda não foi cadastrado pela psicóloga.</p>"
 
-    # Renderizar Histórico
-    html_historico = "".join([f"<div class='mensagem-box'><p>{h[0]}</p><span class='data-msg'>{h[1].strftime('%d/%m/%Y')}</span></div>" for h in historico]) or "<p>Nenhum histórico anterior.</p>"
-
-    # Renderizar Mensagens da Clínica
+    html_historico = "".join([f"<div class='mensagem-box'><p>{h[0]}</p><span class='data-msg'>{h[1].strftime('%d/%m/%Y')}</span></div>" for h in historico]) or "<p>Nenhum histórico.</p>"
     html_clinica = "".join([f"<div class='mensagem-box'><p><strong>{r[0]}:</strong> {r[1]}</p><span class='data-msg'>{r[2].strftime('%d/%m/%Y')}</span></div>" for r in recados]) or "<p>Nenhum aviso geral.</p>"
-
-    # Renderizar Mensagens da Psicóloga
-    html_lembretes = "".join([f"<div class='mensagem-box'><p><strong>{m[0]}:</strong> {m[1]}</p><span class='data-msg'>{m[2].strftime('%d/%m/%Y às %H:%M')}</span></div>" for m in mensagens_privadas]) or "<p>Nenhuma mensagem direta da sua psicóloga.</p>"
+    html_lembretes = "".join([f"<div class='mensagem-box'><p><strong>{m[0]}:</strong> {m[1]}</p><span class='data-msg'>{m[2].strftime('%d/%m/%Y %H:%M')}</span></div>" for m in mensagens_privadas]) or "<p>Nenhuma mensagem direta.</p>"
 
     conteudo_html = f"""
-    <div class="alerta">Bem-vindo(a), {nome_paciente}! Você tem uma sessão agendada para amanhã.</div>
+    <div class="alerta">Bem-vindo(a), {nome_paciente}!</div>
     {html_msg}
 
     <div class="card">
         <h2>Minha Jornada</h2>
         <p style="font-style: italic; color: #5c3e30; margin-bottom: 20px;">Acompanhe aqui o seu tratamento.</p>
         {html_jornada}
-        
         <details style="margin-top: 20px; border-top: 1px solid #E8D5D0; padding-top: 15px;">
-            <summary style="font-family: Arial; font-weight: bold; cursor: pointer;">Ver Histórico de Planos Anteriores</summary>
+            <summary style="font-family: Arial; font-weight: bold; cursor: pointer;">Ver Histórico Anterior</summary>
             <div style="margin-top: 15px;">{html_historico}</div>
         </details>
     </div>
 
     <div class="card">
         <h2>Mensagens da Clínica</h2>
-        <p style="font-style: italic; color: #5c3e30;">Reflexões, avisos e campanhas.</p>
         {html_clinica}
     </div>
 
     <div class="card">
         <h2>Lembretes da Psicóloga</h2>
-        <p style="font-style: italic; color: #5c3e30;">Mensagens exclusivas para você.</p>
         {html_lembretes}
     </div>
 
     <div class="card">
         <h2>Falar com minha Psicóloga</h2>
-        <p style="font-style: italic; color: #5c3e30; margin-bottom: 10px;">Ex: "Consegui realizar a tarefa" ou "Preciso remarcar".</p>
         <form method="POST">
             <label>Selecione a Psicóloga</label>
-            <select name="psicologa_id" required>
-                <option value="">Escolha com quem quer falar...</option>
-                {options_psi}
-            </select>
+            <select name="psicologa_id" required><option value="">Escolha...</option>{options_psi}</select>
             <label>Sua Mensagem</label>
-            <textarea name="mensagem" placeholder="Escreva sua mensagem aqui..." required></textarea>
+            <textarea name="mensagem" required></textarea>
             <button type="submit" class="btn" style="width: 100%;">Enviar Mensagem</button>
         </form>
     </div>
-
-    <a href="/" class="btn btn-outline" style="margin-bottom: 30px;">Sair do Aplicativo</a>
+    <a href="/" class="btn btn-outline" style="margin-bottom: 30px; width: 100%;">Sair do Aplicativo</a>
     """
     return render_template_string(TEMPLATE_UNICO, titulo="Área do Paciente", conteudo=conteudo_html)
 
-@app.route('/admin')
-def area_admin():
+@app.route('/psicologa/<int:user_id>', methods=['GET', 'POST'])
+def area_psicologa(user_id):
+    mensagem_sucesso = ""
     conn = get_db_connection()
     cur = conn.cursor()
+
+    if request.method == 'POST':
+        acao = request.form.get('acao')
+        if acao == 'novo_recado':
+            cur.execute("INSERT INTO recados_gerais (psicologa_id, mensagem) VALUES (%s, %s);", (user_id, request.form.get('mensagem')))
+            mensagem_sucesso = "Recado geral postado!"
+        elif acao == 'novo_plano':
+            cur.execute("INSERT INTO planos_de_acao (paciente_id, psicologa_id, plano, exercicios, metas, recomendacoes) VALUES (%s, %s, %s, %s, %s, %s);", 
+                        (request.form.get('paciente_id'), user_id, request.form.get('plano'), request.form.get('exercicios'), request.form.get('metas'), request.form.get('recomendacoes')))
+            mensagem_sucesso = "Plano de ação criado com sucesso!"
+        elif acao == 'nova_cobranca':
+            cur.execute("INSERT INTO financeiro (paciente_id, psicologa_id, data_cobranca, valor) VALUES (%s, %s, %s, %s);",
+                        (request.form.get('paciente_id'), user_id, request.form.get('data_cobranca'), request.form.get('valor')))
+            mensagem_sucesso = "Cobrança financeira lançada!"
+        conn.commit()
+
+    cur.execute("SELECT id, nome FROM usuarios WHERE tipo_perfil = 'paciente' AND status = 'ativo';")
+    pacientes = cur.fetchall()
+    options_pacientes = "".join([f"<option value='{p[0]}'>{p[1]}</option>" for p in pacientes])
+    cur.close(); conn.close()
+
+    html_msg = f"<div class='sucesso'>{mensagem_sucesso}</div>" if mensagem_sucesso else ""
+
+    conteudo_html = f"""
+    {html_msg}
+    <div class="card">
+        <h2>1. Agenda do Dia</h2><button class="btn btn-outline">+ Agendar Nova Sessão</button>
+    </div>
+    <div class="card">
+        <h2>2. Criar Plano de Ação (Pós-Sessão)</h2>
+        <form method="POST">
+            <input type="hidden" name="acao" value="novo_plano">
+            <label>Selecione o Paciente</label><select name="paciente_id" required><option value="">Escolha...</option>{options_pacientes}</select>
+            <label>Plano de Ação Principal</label><textarea name="plano" required></textarea>
+            <label>Exercícios Sugeridos</label><textarea name="exercicios"></textarea>
+            <label>Metas</label><textarea name="metas"></textarea>
+            <label>Recomendações (Vídeos/Livros)</label><textarea name="recomendacoes"></textarea>
+            <button type="submit" class="btn" style="width: 100%;">Salvar Plano</button>
+        </form>
+    </div>
+    <div class="card">
+        <h2>3. Mural Geral (Para todos)</h2>
+        <form method="POST">
+            <input type="hidden" name="acao" value="novo_recado">
+            <label>Aviso ou Reflexão</label><textarea name="mensagem" required></textarea>
+            <button type="submit" class="btn" style="width: 100%;">Postar</button>
+        </form>
+    </div>
+    <div class="card">
+        <h2>4. Gestão Financeira</h2>
+        <form method="POST">
+            <input type="hidden" name="acao" value="nova_cobranca">
+            <label>Paciente</label><select name="paciente_id" required><option value="">Escolha...</option>{options_pacientes}</select>
+            <label>Data de Cobrança</label><input type="date" name="data_cobranca" required>
+            <label>Valor (R$)</label><input type="number" step="0.01" name="valor" required>
+            <button type="submit" class="btn btn-outline" style="width: 100%;">Lançar Cobrança</button>
+        </form>
+    </div>
+    <a href="/" class="btn btn-outline" style="width: 100%; margin-bottom: 40px;">Sair do Painel</a>
+    """
+    return render_template_string(TEMPLATE_UNICO, titulo="Área da Psicóloga", conteudo=conteudo_html)
+
+@app.route('/admin', methods=['GET', 'POST'])
+def area_admin():
+    mensagem = ""
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    if request.method == 'POST':
+        acao = request.form.get('acao')
+        if acao == 'nova_psicologa':
+            try:
+                cur.execute("INSERT INTO usuarios (nome, cpf, email, contato, senha, tipo_perfil, status) VALUES (%s, %s, %s, %s, %s, 'psicologa', 'ativo');", 
+                            (request.form.get('nome'), request.form.get('cpf'), request.form.get('email'), request.form.get('contato'), request.form.get('senha')))
+                conn.commit()
+                mensagem = "Psicóloga cadastrada com sucesso!"
+            except:
+                conn.rollback()
+                mensagem = "Erro: CPF ou E-mail já cadastrado."
+
     cur.execute("SELECT id, nome, email, contato FROM usuarios WHERE tipo_perfil = 'paciente' AND status = 'pendente';")
     pendentes = cur.fetchall()
-    html_pendentes = "".join([f"<div style='border-bottom: 1px solid #E8D5D0; padding: 10px 0;'><strong>{p[1]}</strong><br><a href='/aprovar/{p[0]}' class='btn' style='padding: 5px 10px; font-size: 0.8rem;'>Aprovar</a></div>" for p in pendentes]) or "<p>Nenhum paciente pendente.</p>"
+    
+    cur.execute("SELECT COUNT(*) FROM usuarios WHERE tipo_perfil = 'paciente' AND status = 'ativo';")
+    qtd_ativos = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM usuarios WHERE tipo_perfil = 'psicologa';")
+    qtd_psi = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM planos_de_acao;")
+    qtd_planos = cur.fetchone()[0]
+
+    cur.execute("SELECT nome, email FROM usuarios WHERE tipo_perfil = 'psicologa';")
+    psicologas = cur.fetchall()
+
+    cur.execute("SELECT a.data_hora, pac.nome, psi.nome, a.status_sessao FROM agenda a JOIN usuarios pac ON a.paciente_id = pac.id JOIN usuarios psi ON a.psicologa_id = psi.id ORDER BY a.data_hora DESC LIMIT 5;")
+    agenda_global = cur.fetchall()
+
+    cur.execute("SELECT f.data_cobranca, pac.nome, f.valor, f.status_pagamento FROM financeiro f JOIN usuarios pac ON f.paciente_id = pac.id ORDER BY f.data_cobranca DESC LIMIT 5;")
+    financeiro_global = cur.fetchall()
+
     cur.close(); conn.close()
-    return render_template_string(TEMPLATE_UNICO, titulo="Admin", conteudo=f"<div class='card'><h2>Pacientes Pendentes</h2>{html_pendentes}</div><a href='/' class='btn btn-outline'>Sair</a>")
+
+    html_msg = f"<div class='sucesso'>{mensagem}</div>" if mensagem else ""
+    html_pendentes = "".join([f"<div style='border-bottom: 1px solid #E8D5D0; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;'><div><strong>{p[1]}</strong><br><span style='font-size: 0.8rem; font-family: Arial;'>{p[2]} | {p[3]}</span></div><a href='/aprovar/{p[0]}' class='btn btn-small'>Aprovar</a></div>" for p in pendentes]) or "<p>Nenhum paciente aguardando.</p>"
+    html_psicologas = "".join([f"<li><strong>{psi[0]}</strong> ({psi[1]})</li>" for psi in psicologas]) or "<p>Nenhuma psicóloga cadastrada.</p>"
+    html_agenda = "".join([f"<div class='mensagem-box'><p><strong>{ag[0].strftime('%d/%m/%Y %H:%M') if ag[0] else 'S/D'}</strong> - {ag[1]} com {ag[2]} <span style='float:right; color:#5c3e30;'>[{ag[3]}]</span></p></div>" for ag in agenda_global]) or "<p>Nenhuma sessão registrada.</p>"
+    html_financeiro = "".join([f"<div class='mensagem-box'><p><strong>{fin[0].strftime('%d/%m/%Y') if fin[0] else 'S/D'}</strong> - {fin[1]} <span style='float:right; font-weight: bold;'>R$ {fin[2]} [{fin[3]}]</span></p></div>" for fin in financeiro_global]) or "<p>Nenhuma cobrança lançada.</p>"
+
+    conteudo_html = f"""
+    <div class="alerta">Área Administrativa — Gestão Completa</div>
+    {html_msg}
+    
+    <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+        <div class="card" style="flex: 1; min-width: 300px;">
+            <h2>Aprovações Pendentes</h2>{html_pendentes}
+        </div>
+        <div class="card" style="flex: 1; min-width: 300px;">
+            <h2>Relatório Rápido</h2>
+            <ul>
+                <li>📈 <strong>Ativos:</strong> {qtd_ativos}</li>
+                <li>👩‍⚕️ <strong>Psicólogas:</strong> {qtd_psi}</li>
+                <li>📋 <strong>Planos:</strong> {qtd_planos}</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="card"><h2>Agenda Global</h2>{html_agenda}</div>
+    <div class="card"><h2>Financeiro Global</h2>{html_financeiro}</div>
+
+    <div class="card" style="background-color: #fcf9f8;">
+        <h2>Cadastrar Psicóloga</h2>
+        <form method="POST">
+            <input type="hidden" name="acao" value="nova_psicologa">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px;"><label>Nome</label><input type="text" name="nome" required></div>
+                <div style="flex: 1; min-width: 150px;"><label>CPF</label><input type="text" name="cpf" required></div>
+            </div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 200px;"><label>E-mail Corporativo</label><input type="email" name="email" required></div>
+                <div style="flex: 1; min-width: 150px;"><label>Contato</label><input type="text" name="contato" required></div>
+            </div>
+            <label>Senha</label><input type="password" name="senha" required>
+            <button type="submit" class="btn" style="width: 100%; margin-top: 10px;">Adicionar à Equipe</button>
+        </form>
+        <h3 style="margin-top: 20px; border-top: 1px solid #E8D5D0; padding-top: 15px;">Equipe Atual:</h3>
+        <ul>{html_psicologas}</ul>
+    </div>
+    <a href="/" class="btn btn-outline" style="margin-bottom: 40px; width: 100%;">Sair do Admin</a>
+    """
+    return render_template_string(TEMPLATE_UNICO, titulo="Admin", conteudo=conteudo_html)
 
 @app.route('/aprovar/<int:user_id>')
 def aprovar_usuario(user_id):
