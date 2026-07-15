@@ -44,7 +44,7 @@ def iniciar_banco():
         CREATE TABLE IF NOT EXISTS agenda (
             id SERIAL PRIMARY KEY, psicologa_id INTEGER REFERENCES usuarios(id),
             paciente_id INTEGER REFERENCES usuarios(id), data_hora TIMESTAMP,
-            status_sessao VARCHAR(20) DEFAULT 'Agendada'
+            status_sessao VARCHAR(50) DEFAULT 'Agendado'
         );
         CREATE TABLE IF NOT EXISTS financeiro (
             id SERIAL PRIMARY KEY, paciente_id INTEGER REFERENCES usuarios(id),
@@ -70,6 +70,10 @@ def iniciar_banco():
     for col in colunas_novas:
         try: cur.execute(f"ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS {col};")
         except: pass
+        
+    # Aumenta o tamanho do campo status_sessao caso já exista para comportar "Aguardando atendimento"
+    try: cur.execute("ALTER TABLE agenda ALTER COLUMN status_sessao TYPE VARCHAR(50);")
+    except: pass
 
     cur.execute("SELECT COUNT(*) FROM usuarios WHERE tipo_perfil = 'admin';")
     if cur.fetchone()[0] == 0:
@@ -85,13 +89,11 @@ def enviar_email_boas_vindas(destinatario, nome_paciente):
     remetente = os.getenv("EMAIL_CLINICA", "nao-configurado")
     senha = os.getenv("SENHA_EMAIL_CLINICA", "nao-configurado")
     if remetente == "nao-configurado": return
-    
     msg = MIMEMultipart()
     msg['From'] = remetente
     msg['To'] = destinatario
     msg['Subject'] = "Bem-vindo(a) à Ser Perene"
     msg.attach(MIMEText(f"Olá, {nome_paciente}!\n\nSeu cadastro foi recebido com sucesso e está em análise. Você receberá um aviso assim que for liberado.", 'plain'))
-    
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -127,11 +129,10 @@ TEMPLATE_UNICO = """
         .sucesso { background-color: #d4edda; color: #155724; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; font-family: 'Arial'; }
         .erro { background-color: #ffcccc; color: #990000; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; font-family: 'Arial'; }
         .alerta { background-color: #E8D5D0; color: #3A261D; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: bold; text-align: center; font-family: 'Arial'; }
-        .mensagem-box { background-color: #F9F4F3; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #E8D5D0; }
+        .mensagem-box { background-color: #F9F4F3; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #E8D5D0; display: flex; justify-content: space-between; align-items: center; }
         .data-msg { font-size: 0.75rem; color: #888; display: block; margin-top: 5px; font-family: 'Arial'; }
         .foto-perfil { width: 50px; height: 50px; border-radius: 50%; object-fit: cover; vertical-align: middle; margin-right: 10px; border: 2px solid #3A261D; }
         .link-cadastro { display: block; text-align: center; margin-top: 20px; font-family: 'Arial', sans-serif; color: #3A261D; text-decoration: none; font-size: 0.9rem; }
-        .link-cadastro:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -152,10 +153,8 @@ def index():
     <div class="card" style="max-width: 450px; margin: 0 auto; text-align: center;">
         <h2 style="border: none;">Bem-vindo(a) à Clínica</h2>
         <p style="margin-bottom: 25px; font-style: italic; color: #5c3e30;">Selecione o seu perfil para acessar o sistema:</p>
-        
         <a href="/login/paciente" class="btn" style="margin-bottom: 15px; padding: 15px; font-size: 1.1rem;">Sou Paciente</a>
         <a href="/login/psicologa" class="btn" style="margin-bottom: 25px; padding: 15px; font-size: 1.1rem; background-color: #5c3e30;">Sou Psicóloga</a>
-        
         <hr style="border: 0; height: 1px; background-color: #E8D5D0; margin-bottom: 20px;">
         <a href="/login/admin" class="btn btn-outline">Acesso Administrativo</a>
     </div>
@@ -165,57 +164,39 @@ def index():
 @app.route('/login/<perfil>', methods=['GET', 'POST'])
 def login(perfil):
     if perfil not in ['paciente', 'psicologa', 'admin']: return redirect('/')
-    
     msg_erro = ""
     if request.method == 'POST':
         conn = get_db_connection()
         cur = conn.cursor()
-        # Verifica se o email e senha batem, e se o perfil tentado é o perfil real dele
-        cur.execute("SELECT id, tipo_perfil, status FROM usuarios WHERE email=%s AND senha=%s AND tipo_perfil=%s LIMIT 1;", 
-                    (request.form.get('email'), request.form.get('senha'), perfil))
+        cur.execute("SELECT id, tipo_perfil, status FROM usuarios WHERE email=%s AND senha=%s AND tipo_perfil=%s LIMIT 1;", (request.form.get('email'), request.form.get('senha'), perfil))
         user = cur.fetchone()
         cur.close(); conn.close()
         
         if user:
-            if user[2] == 'pendente': 
-                msg_erro = "Seu cadastro está em análise pela clínica. Aguarde a liberação."
-            else:
-                return redirect(url_for(f"area_{user[1]}", user_id=user[0]) if user[1] != 'admin' else url_for('area_admin'))
-        else:
-            msg_erro = "E-mail ou senha incorretos, ou perfil inválido."
+            if user[2] == 'pendente': msg_erro = "Seu cadastro está em análise pela clínica. Aguarde a liberação."
+            else: return redirect(url_for(f"area_{user[1]}", user_id=user[0]) if user[1] != 'admin' else url_for('area_admin'))
+        else: msg_erro = "E-mail ou senha incorretos, ou perfil inválido."
 
     html_erro = f"<div class='erro'>{msg_erro}</div>" if msg_erro else ""
-    
-    # Renderiza o link de cadastro de acordo com o perfil da página
-    link_cad = ""
-    if perfil == 'paciente':
-        link_cad = f'<a href="/cadastro/paciente" class="link-cadastro">Primeiro acesso? <strong>Cadastre-se como Paciente aqui.</strong></a>'
-    elif perfil == 'psicologa':
-        link_cad = f'<a href="/cadastro/psicologa" class="link-cadastro">Quer fazer parte da equipe? <strong>Solicite seu acesso aqui.</strong></a>'
+    link_cad = f'<a href="/cadastro/paciente" class="link-cadastro">Primeiro acesso? <strong>Cadastre-se como Paciente aqui.</strong></a>' if perfil == 'paciente' else (f'<a href="/cadastro/psicologa" class="link-cadastro">Quer fazer parte da equipe? <strong>Solicite seu acesso aqui.</strong></a>' if perfil == 'psicologa' else '')
 
-    titulo_display = perfil.capitalize()
     html = f"""
     <div class="card" style="max-width: 400px; margin: 0 auto;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h2 style="margin:0; border:none;">Login - {titulo_display}</h2>
+            <h2 style="margin:0; border:none;">Login - {perfil.capitalize()}</h2>
             <a href="/" style="color:#5c3e30; text-decoration:none; font-family:Arial; font-size:0.9rem;">Voltar</a>
         </div>
         <hr style="border: 0; height: 1px; background-color: #E8D5D0; margin: 15px 0;">
         {html_erro}
-        <form method="POST">
-            <label>E-mail</label><input type="email" name="email" required>
-            <label>Senha</label><input type="password" name="senha" required>
-            <button type="submit" class="btn">Entrar na Conta</button>
-        </form>
+        <form method="POST"><label>E-mail</label><input type="email" name="email" required><label>Senha</label><input type="password" name="senha" required><button type="submit" class="btn">Entrar na Conta</button></form>
         {link_cad}
     </div>
     """
-    return render_template_string(TEMPLATE_UNICO, titulo=f"Login {titulo_display}", conteudo=html, script_popup="")
+    return render_template_string(TEMPLATE_UNICO, titulo=f"Login {perfil.capitalize()}", conteudo=html, script_popup="")
 
 @app.route('/cadastro/<perfil>', methods=['GET', 'POST'])
 def cadastro(perfil):
     if perfil not in ['paciente', 'psicologa']: return redirect('/')
-    
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -223,52 +204,27 @@ def cadastro(perfil):
         foto_b64 = None
         if 'foto' in request.files:
             foto_file = request.files['foto']
-            if foto_file.filename != '':
-                foto_b64 = base64.b64encode(foto_file.read()).decode('utf-8')
-
+            if foto_file.filename != '': foto_b64 = base64.b64encode(foto_file.read()).decode('utf-8')
         psi_id = request.form.get('psicologa_id')
         psi_id = psi_id if psi_id and psi_id.strip() != "" else None
-
         try:
-            cur.execute("""
-                INSERT INTO usuarios (nome, cpf, email, contato, senha, tipo_perfil, status, crp, foto, psicologa_id) 
-                VALUES (%s,%s,%s,%s,%s,%s,'pendente',%s,%s,%s);
-            """, (
-                request.form.get('nome'), request.form.get('cpf'), request.form.get('email'), 
-                request.form.get('contato'), request.form.get('senha'), perfil,
-                request.form.get('crp'), foto_b64, psi_id
-            ))
+            cur.execute("INSERT INTO usuarios (nome, cpf, email, contato, senha, tipo_perfil, status, crp, foto, psicologa_id) VALUES (%s,%s,%s,%s,%s,%s,'pendente',%s,%s,%s);", 
+                        (request.form.get('nome'), request.form.get('cpf'), request.form.get('email'), request.form.get('contato'), request.form.get('senha'), perfil, request.form.get('crp'), foto_b64, psi_id))
             conn.commit()
             enviar_email_boas_vindas(request.form.get('email'), request.form.get('nome'))
             return redirect('/')
         except Exception as e: 
             conn.rollback()
-            return render_template_string(TEMPLATE_UNICO, titulo="Cadastro", conteudo="<div class='erro'>Erro: CPF ou E-mail já cadastrados.</div>", script_popup="")
+            return render_template_string(TEMPLATE_UNICO, titulo="Cadastro", conteudo="<div class='erro'>Erro: CPF/E-mail em uso.</div>", script_popup="")
         finally: cur.close(); conn.close()
     
-    # Formulários Condicionais
     campos_extras = ""
     if perfil == 'paciente':
         cur.execute("SELECT id, nome FROM usuarios WHERE tipo_perfil = 'psicologa' AND status = 'ativo';")
         options_psi = "".join([f"<option value='{p[0]}'>Dra. {p[1]}</option>" for p in cur.fetchall()])
-        campos_extras = f"""
-            <label>Sua Psicóloga (Opcional)</label>
-            <select name="psicologa_id">
-                <option value="">Ainda não tenho / Não sei</option>
-                {options_psi}
-            </select>
-        """
+        campos_extras = f'<label>Sua Psicóloga (Opcional)</label><select name="psicologa_id"><option value="">Não tenho</option>{options_psi}</select>'
     elif perfil == 'psicologa':
-        campos_extras = """
-            <div style="background-color: #F9F4F3; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-                <h3 style="margin-top:0; color:#3A261D;">Dados Profissionais</h3>
-                <label>Registro CRP</label>
-                <input type="text" name="crp" placeholder="Ex: 00/00000" required>
-                <label>Foto de Perfil</label>
-                <input type="file" name="foto" accept="image/*">
-            </div>
-        """
-    
+        campos_extras = '<div style="background-color: #F9F4F3; padding: 15px; border-radius: 8px; margin-bottom: 15px;"><h3 style="margin-top:0; color:#3A261D;">Dados Profissionais</h3><label>Registro CRP</label><input type="text" name="crp" placeholder="Ex: 00/00000" required><label>Foto de Perfil</label><input type="file" name="foto" accept="image/*"></div>'
     cur.close(); conn.close()
 
     html = f"""
@@ -278,109 +234,80 @@ def cadastro(perfil):
             <a href="/login/{perfil}" style="color:#5c3e30; text-decoration:none; font-family:Arial; font-size:0.9rem;">Voltar</a>
         </div>
         <hr style="border: 0; height: 1px; background-color: #E8D5D0; margin: 15px 0;">
-        
         <form method="POST" enctype="multipart/form-data">
             <label>Nome Completo</label><input type="text" name="nome" required>
             <label>CPF</label><input type="text" name="cpf" required>
             <label>E-mail</label><input type="email" name="email" required>
             <label>Contato (WhatsApp)</label><input type="text" name="contato" required>
             <label>Crie uma Senha</label><input type="password" name="senha" required>
-            
             {campos_extras}
-
             <button type="submit" class="btn" style="margin-top: 10px;">Solicitar Aprovação</button>
         </form>
     </div>
     """
-    return render_template_string(TEMPLATE_UNICO, titulo=f"Cadastro {perfil.capitalize()}", conteudo=html, script_popup="")
-
-@app.route('/admin', methods=['GET', 'POST'])
-def area_admin():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    if request.method == 'POST':
-        acao = request.form.get('acao')
-        if acao == 'campanha':
-            cur.execute("INSERT INTO recados_gerais (autor_id, tipo, mensagem) VALUES ((SELECT id FROM usuarios WHERE tipo_perfil='admin' LIMIT 1), 'Campanha', %s);", (request.form.get('mensagem'),))
-            conn.commit()
-
-    # Busca cadastros pendentes mostrando explicitamente o que pediram
-    cur.execute("SELECT id, nome, email, contato, tipo_perfil, crp FROM usuarios WHERE status = 'pendente';")
-    pendentes = cur.fetchall()
-    
-    html_pendentes = ""
-    for p in pendentes:
-        txt_crp = f" | CRP: {p[5]}" if p[4] == 'psicologa' and p[5] else ""
-        html_pendentes += f"""
-        <div style='border-bottom: 1px solid #E8D5D0; padding: 15px 0; display: flex; justify-content: space-between; align-items: center;'>
-            <div>
-                <strong>{p[1]}</strong><br>
-                <span style='font-size: 0.85rem; font-family: Arial; color: #5c3e30; font-weight: bold;'>Solicitou acesso como: {p[4].capitalize()}</span><br>
-                <span style='font-size: 0.8rem; font-family: Arial;'>{p[2]} | {p[3]}{txt_crp}</span>
-            </div>
-            <a href='/aprovar/{p[0]}' class='btn btn-small'>Aprovar Cadastro</a>
-        </div>
-        """
-    if not html_pendentes: html_pendentes = "<p>Nenhum cadastro aguardando aprovação no momento.</p>"
-
-    # Lista de Psicólogas Ativas com Foto
-    cur.execute("SELECT nome, email, crp, foto FROM usuarios WHERE tipo_perfil = 'psicologa' AND status = 'ativo';")
-    psicologas = cur.fetchall()
-    html_psis = ""
-    for psi in psicologas:
-        img_tag = f"<img src='data:image/jpeg;base64,{psi[3]}' class='foto-perfil'>" if psi[3] else "<div class='foto-perfil' style='display:inline-block; background:#E8D5D0;'></div>"
-        crp_txt = f"CRP: {psi[2]}" if psi[2] else "CRP: Não informado"
-        html_psis += f"<li style='display:flex; align-items:center; margin-bottom:15px;'>{img_tag} <div><strong>Dra. {psi[0]}</strong><br><span style='font-size:0.8rem;'>{psi[1]} | {crp_txt}</span></div></li>"
-
-    cur.close(); conn.close()
-
-    html = f"""
-    <div class="alerta">Painel Administrativo Mestre</div>
-    
-    <div class="card">
-        <h2>Aprovações Pendentes</h2>
-        <p style="font-family:Arial; font-size:0.9rem; color:#5c3e30;">Libere o acesso dos pacientes e psicólogas que se cadastraram no sistema.</p>
-        {html_pendentes}
-    </div>
-
-    <div class="card">
-        <h2>Corpo Clínico (Psicólogas Ativas)</h2>
-        <ul style="list-style:none; margin:0;">
-            {html_psis or '<p>Nenhuma psicóloga ativa na equipe.</p>'}
-        </ul>
-    </div>
-    
-    <div class="card">
-        <h2>Atalhos de Gestão e Comunicação</h2>
-        <form method="POST" style="margin-bottom: 20px;"><input type="hidden" name="acao" value="campanha">
-            <label>Disparar mensagem/campanha para toda a clínica:</label>
-            <textarea name="mensagem" required></textarea>
-            <button type="submit" class="btn">Publicar Campanha Geral</button>
-        </form>
-        <div style="display:flex; gap:10px; flex-wrap: wrap;">
-            <button class="btn btn-outline" style="flex:1; min-width: 200px;">Ver Financeiro</button>
-            <button class="btn btn-outline" style="flex:1; min-width: 200px;">Ver Agenda Global</button>
-        </div>
-    </div>
-
-    <a href="/" class="btn btn-outline" style="margin-bottom:30px;">Sair do Painel Admin</a>
-    """
-    return render_template_string(TEMPLATE_UNICO, titulo="Admin", conteudo=html, script_popup="")
-
-@app.route('/aprovar/<int:user_id>')
-def aprovar_usuario(user_id):
-    conn = get_db_connection()
-    if conn:
-        cur = conn.cursor()
-        # Aprova mantendo o perfil que a pessoa solicitou na tela isolada dela
-        cur.execute("UPDATE usuarios SET status = 'ativo' WHERE id = %s;", (user_id,))
-        conn.commit()
-        cur.close(); conn.close()
-    return redirect(url_for('area_admin'))
+    return render_template_string(TEMPLATE_UNICO, titulo=f"Cadastro", conteudo=html, script_popup="")
 
 # ==========================================
-# ROTAS EXISTENTES MANTIDAS (Paciente e Psicóloga)
+# NOVO: MÓDULO DE VÍDEO (JITSI MEET)
+# ==========================================
+@app.route('/sessao_video/<int:sessao_id>', methods=['GET', 'POST'])
+def sala_video(sessao_id):
+    uid = request.args.get('uid')
+    perfil = request.args.get('perfil')
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # Ação do Botão "Finalizar Sessão" da Psicóloga
+    if request.method == 'POST' and request.form.get('acao') == 'finalizar':
+        cur.execute("UPDATE agenda SET status_sessao = 'Atendimento realizado' WHERE id = %s;", (sessao_id,))
+        conn.commit()
+        cur.close(); conn.close()
+        return redirect(url_for(f"area_{perfil}", user_id=uid))
+
+    # Buscando dados da sessão
+    cur.execute("SELECT data_hora, status_sessao, paciente_id, psicologa_id FROM agenda WHERE id = %s;", (sessao_id,))
+    sessao = cur.fetchone()
+    
+    # Se o paciente entrou na sala, atualiza o status automaticamente para "Aguardando atendimento"
+    if perfil == 'paciente' and sessao[1] == 'Agendado':
+        cur.execute("UPDATE agenda SET status_sessao = 'Aguardando atendimento' WHERE id = %s;", (sessao_id,))
+        conn.commit()
+        status_atual = 'Aguardando atendimento'
+    else:
+        status_atual = sessao[1]
+
+    cur.close(); conn.close()
+    
+    html = f"""
+    <div class="card" style="max-width: 1000px; margin: 0 auto; text-align: center;">
+        <h2 style="margin-bottom: 5px;">Sessão por Vídeo</h2>
+        <p style="margin-bottom: 20px; font-family: Arial;">Status atual: <strong style="color: #4CAF50;">{status_atual}</strong></p>
+        
+        <div id="meet" style="width: 100%; height: 500px; background-color: #111; border-radius: 8px; overflow: hidden; margin-bottom: 20px; border: 2px solid #E8D5D0;"></div>
+        
+        <form method="POST">
+            {'<input type="hidden" name="acao" value="finalizar"><button type="submit" class="btn" style="background-color: #990000; color: white; border: none;">Encerrar e Marcar como Atendimento Realizado</button>' if perfil == 'psicologa' else f'<a href="/paciente/{uid}" class="btn btn-outline" style="width: 100%;">Sair da Sala de Espera</a>'}
+        </form>
+    </div>
+    
+    <script src="https://meet.jit.si/external_api.js"></script>
+    <script>
+        const domain = 'meet.jit.si';
+        const options = {{
+            roomName: 'Clinica_SerPerene_Sessao_{sessao_id}',
+            width: '100%',
+            height: '100%',
+            parentNode: document.querySelector('#meet'),
+            interfaceConfigOverwrite: {{ TOOLBAR_BUTTONS: ['microphone', 'camera', 'chat', 'hangup', 'fullscreen'] }}
+        }};
+        const api = new JitsiMeetExternalAPI(domain, options);
+    </script>
+    """
+    return render_template_string(TEMPLATE_UNICO, titulo="Sala de Sessão", conteudo=html, script_popup="")
+
+# ==========================================
+# PAINÉIS DOS USUÁRIOS
 # ==========================================
 @app.route('/paciente/<int:user_id>', methods=['GET', 'POST'])
 def area_paciente(user_id):
@@ -393,38 +320,136 @@ def area_paciente(user_id):
         elif acao == 'mensagem':
             cur.execute("INSERT INTO mensagens (remetente_id, destinatario_id, conteudo) VALUES (%s, %s, %s);", (user_id, request.form.get('psi_id'), request.form.get('msg')))
         conn.commit()
+
+    # Checagem de Pop-ups (Plano de Ação novo)
     cur.execute("SELECT id, mensagem FROM notificacoes_popup WHERE usuario_id = %s AND lida = FALSE LIMIT 1;", (user_id,))
     alerta = cur.fetchone()
-    script_popup = ""
-    if alerta:
-        script_popup = f"<script>window.onload = function() {{ alert('AVISO DA CLÍNICA:\\n\\n{alerta[1]}'); }};</script>"
-        cur.execute("UPDATE notificacoes_popup SET lida = TRUE WHERE id = %s;", (alerta[0],))
-        conn.commit()
+    script_popup = f"<script>window.onload = function() {{ alert('AVISO:\\n\\n{alerta[1]}'); }};</script>" if alerta else ""
+    if alerta: cur.execute("UPDATE notificacoes_popup SET lida = TRUE WHERE id = %s;", (alerta[0],)); conn.commit()
+    
+    # Próxima Sessão / Agenda
+    cur.execute("SELECT id, data_hora, status_sessao FROM agenda WHERE paciente_id = %s AND status_sessao != 'Atendimento realizado' ORDER BY data_hora ASC LIMIT 1;", (user_id,))
+    prox_sessao = cur.fetchone()
+    
     cur.execute("SELECT plano, exercicios FROM planos_de_acao WHERE paciente_id = %s ORDER BY data_criacao DESC LIMIT 1;", (user_id,))
     plano = cur.fetchone()
     cur.close(); conn.close()
     
+    # Renderização da Próxima Sessão com Módulo de Vídeo
+    html_sessao = ""
+    if prox_sessao:
+        html_sessao = f"""
+        <div class="card" style="border-left: 6px solid #4CAF50; background-color: #f6fff6;">
+            <h2 style="color: #4CAF50;">Vídeo Chamada - Próxima Sessão</h2>
+            <p><strong>Data/Hora:</strong> {prox_sessao[1].strftime('%d/%m/%Y às %H:%M')}</p>
+            <p><strong>Status:</strong> {prox_sessao[2]}</p>
+            <a href="/sessao_video/{prox_sessao[0]}?uid={user_id}&perfil=paciente" class="btn" style="background-color: #4CAF50; color: white; margin-top: 10px;">Entrar na Sala de Vídeo</a>
+        </div>
+        """
+    
     html_plano = f"<p><strong>Plano:</strong> {plano[0]}</p><p><strong>Tarefas:</strong> {plano[1]}</p>" if plano else "<p>Nenhum plano ativo.</p>"
-    html = f"""<div class="card"><h2>Minha Jornada</h2>{html_plano}</div><div class="card"><h2>Diário Emocional</h2><form method="POST"><input type="hidden" name="acao" value="diario"><label>Humor de hoje:</label><select name="humor"><option>Bem</option><option>Ansioso(a)</option><option>Triste</option><option>Irritado(a)</option></select><label>Detalhes:</label><textarea name="nota"></textarea><button type="submit" class="btn">Registrar</button></form></div><a href="/" class="btn btn-outline" style="margin-bottom:30px;">Sair</a>"""
+    html = f"""
+    {html_sessao}
+    <div class="card"><h2>Minha Jornada</h2>{html_plano}</div>
+    <div class="card">
+        <h2>Diário Emocional</h2>
+        <form method="POST"><input type="hidden" name="acao" value="diario">
+        <label>Humor de hoje:</label><select name="humor"><option>Bem</option><option>Ansioso(a)</option><option>Triste</option><option>Irritado(a)</option></select>
+        <label>Detalhes:</label><textarea name="nota"></textarea><button type="submit" class="btn">Registrar</button></form>
+    </div>
+    <a href="/" class="btn btn-outline" style="margin-bottom:30px;">Sair</a>
+    """
     return render_template_string(TEMPLATE_UNICO, titulo="Paciente", conteudo=html, script_popup=script_popup)
 
 @app.route('/psicologa/<int:user_id>', methods=['GET', 'POST'])
 def area_psicologa(user_id):
     conn = get_db_connection()
     cur = conn.cursor()
+    msg_sucesso = ""
+
     if request.method == 'POST':
         acao = request.form.get('acao')
-        if acao == 'novo_plano':
-            paciente_id = request.form.get('paciente_id')
-            cur.execute("INSERT INTO planos_de_acao (paciente_id, psicologa_id, plano, exercicios) VALUES (%s, %s, %s, %s);", (paciente_id, user_id, request.form.get('plano'), request.form.get('exercicios')))
-            cur.execute("INSERT INTO notificacoes_popup (usuario_id, mensagem) VALUES (%s, 'Sua psicóloga atualizou seu Plano de Ação!');", (paciente_id,))
-            conn.commit()
+        if acao == 'nova_sessao':
+            cur.execute("INSERT INTO agenda (psicologa_id, paciente_id, data_hora, status_sessao) VALUES (%s, %s, %s, 'Agendado');", 
+                        (user_id, request.form.get('paciente_id'), request.form.get('data_hora')))
+            msg_sucesso = "Sessão agendada com sucesso!"
+        elif acao == 'novo_plano':
+            cur.execute("INSERT INTO planos_de_acao (paciente_id, psicologa_id, plano, exercicios) VALUES (%s, %s, %s, %s);", 
+                        (request.form.get('paciente_id'), user_id, request.form.get('plano'), request.form.get('exercicios')))
+            cur.execute("INSERT INTO notificacoes_popup (usuario_id, mensagem) VALUES (%s, 'Sua psicóloga atualizou seu Plano de Ação e Tarefas!');", (request.form.get('paciente_id'),))
+            msg_sucesso = "Plano criado e paciente notificado!"
+        conn.commit()
+
+    # Pacientes para os selects
     cur.execute("SELECT id, nome FROM usuarios WHERE tipo_perfil = 'paciente' AND status = 'ativo';")
     opts = "".join([f"<option value='{p[0]}'>{p[1]}</option>" for p in cur.fetchall()])
+    
+    # Lista de Sessões Agendadas
+    cur.execute("""
+        SELECT a.id, u.nome, a.data_hora, a.status_sessao 
+        FROM agenda a JOIN usuarios u ON a.paciente_id = u.id 
+        WHERE a.psicologa_id = %s AND a.status_sessao != 'Atendimento realizado' 
+        ORDER BY a.data_hora ASC
+    """, (user_id,))
+    sessoes = cur.fetchall()
+    html_sessoes = "".join([
+        f"<div class='mensagem-box'><div><p style='margin:0;'><strong>{s[1]}</strong><br><span style='font-size: 0.8rem;'>{s[2].strftime('%d/%m/%Y %H:%M')} | Status: {s[3]}</span></p></div>"
+        f"<a href='/sessao_video/{s[0]}?uid={user_id}&perfil=psicologa' class='btn btn-small'>Abrir Vídeo</a></div>" 
+        for s in sessoes
+    ]) or "<p>Nenhuma sessão pendente.</p>"
+
     cur.close(); conn.close()
     
-    html = f"""<div class="card"><h2>Atualizar Plano de Ação</h2><form method="POST"><input type="hidden" name="acao" value="novo_plano"><select name="paciente_id" required><option value="">Paciente...</option>{opts}</select><textarea name="plano" placeholder="Plano principal" required></textarea><textarea name="exercicios" placeholder="Tarefas"></textarea><button type="submit" class="btn">Salvar e Disparar Alerta</button></form></div><a href="/" class="btn btn-outline" style="margin-bottom:30px;">Sair</a>"""
+    html = f"""
+    {"<div class='sucesso'>"+msg_sucesso+"</div>" if msg_sucesso else ""}
+    
+    <div class="card">
+        <h2>Agendar Nova Sessão (Vídeo)</h2>
+        <form method="POST"><input type="hidden" name="acao" value="nova_sessao">
+            <select name="paciente_id" required><option value="">Paciente...</option>{opts}</select>
+            <input type="datetime-local" name="data_hora" required>
+            <button type="submit" class="btn">Confirmar Agendamento</button>
+        </form>
+    </div>
+
+    <div class="card" style="border-left: 6px solid #4CAF50;">
+        <h2 style="color: #4CAF50;">Salas de Atendimento (Agenda)</h2>
+        {html_sessoes}
+    </div>
+
+    <div class="card">
+        <h2>Atualizar Plano e Tarefas</h2>
+        <p style="font-family:Arial; font-size:0.8rem;">Gera um alerta de Pop-up no celular do paciente.</p>
+        <form method="POST"><input type="hidden" name="acao" value="novo_plano">
+            <select name="paciente_id" required><option value="">Paciente...</option>{opts}</select>
+            <textarea name="plano" placeholder="Plano principal" required></textarea>
+            <textarea name="exercicios" placeholder="Tarefas (opcional)"></textarea>
+            <button type="submit" class="btn">Salvar e Disparar Alerta</button>
+        </form>
+    </div>
+    <a href="/" class="btn btn-outline" style="margin-bottom:30px;">Sair</a>
+    """
     return render_template_string(TEMPLATE_UNICO, titulo="Psicóloga", conteudo=html, script_popup="")
+
+@app.route('/admin')
+def area_admin():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, nome, email, contato, tipo_perfil, crp FROM usuarios WHERE status = 'pendente';")
+    pendentes = cur.fetchall()
+    html_pendentes = "".join([f"<div style='border-bottom: 1px solid #E8D5D0; padding: 15px 0; display: flex; justify-content: space-between; align-items: center;'><div><strong>{p[1]}</strong><br><span style='font-size: 0.85rem; font-family: Arial; color: #5c3e30; font-weight: bold;'>Solicitou acesso como: {p[4].capitalize()}</span><br><span style='font-size: 0.8rem; font-family: Arial;'>{p[2]} | {p[3]}</span></div><form action='/aprovar/{p[0]}' method='POST' style='margin:0;'><button type='submit' class='btn btn-small'>Aprovar Cadastro</button></form></div>" for p in pendentes]) or "<p>Nenhum cadastro aguardando.</p>"
+    cur.close(); conn.close()
+    html = f"""<div class="alerta">Painel Administrativo Mestre</div><div class="card"><h2>Aprovações Pendentes</h2>{html_pendentes}</div><a href="/" class="btn btn-outline" style="margin-bottom:30px;">Sair do Painel Admin</a>"""
+    return render_template_string(TEMPLATE_UNICO, titulo="Admin", conteudo=html, script_popup="")
+
+@app.route('/aprovar/<int:user_id>', methods=['POST'])
+def aprovar_usuario(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET status = 'ativo' WHERE id = %s;", (user_id,))
+    conn.commit()
+    cur.close(); conn.close()
+    return redirect(url_for('area_admin'))
 
 if __name__ == '__main__':
     iniciar_banco()
